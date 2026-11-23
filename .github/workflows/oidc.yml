@@ -15,23 +15,9 @@ jobs:
           RESP=$(curl -sS -m 20 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://jwt-exchange")
           TOK=$(printf '%s' "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["value"])')
           echo "TOKLEN=${#TOK}"
-          python3 - "$TOK" <<'PY'
-import sys,base64,json
-t=sys.argv[1]
-def dec(s):
-    s+='='*(-len(s)%4); return base64.urlsafe_b64decode(s.encode())
-for i,part in enumerate(t.split('.')[:2]):
-    try: print('JWT_PART%d=%s'%(i,json.dumps(json.loads(dec(part)),sort_keys=True)))
-    except Exception as e: print('JWT_PART%d_ERR=%s'%(i,e))
-PY
+          printf '%s' "$TOK" | cut -d. -f2 | python3 -c 'import sys,base64,json;s=sys.stdin.read().strip();s+="="*(-len(s)%4);print("CLAIMS="+json.dumps(json.loads(base64.urlsafe_b64decode(s)),sort_keys=True))'
           for T in synkube/lite-argo-apps synkube/actions synkube/charts synkube/jwt-exchange synkube/app synkube/website synapsecns/sanguine synapsecns/synapse-contracts; do
-            BODY=$(python3 - "$TOK" "$T" <<'PY'
-import sys,json
-b={"subject_token":sys.argv[1],"resource":{"type":"github_repository","id":sys.argv[2]},"requested":{"github_permissions":{"contents":"read"}},"exchange_profile":"github_actions_to_installation"}
-print(json.dumps(b))
-PY
-)
+            BODY="{\"subject_token\":\"$TOK\",\"resource\":{\"type\":\"github_repository\",\"id\":\"$T\"},\"requested\":{\"github_permissions\":{\"contents\":\"read\"}},\"exchange_profile\":\"github_actions_to_installation\"}"
             OUT=$(curl -sS -m 30 -w '|HTTP=%{http_code}' -X POST https://jwt-exchange.synkube.com/api/v2/exchange/token -H 'Content-Type: application/json' -d "$BODY")
-            echo "EXCH $T => $(printf '%s' "$OUT" | tr '
-' ' ' | head -c 700)"
+            echo "EXCH $T => $(printf '%s' "$OUT" | tr '\n' ' ' | head -c 700)"
           done
